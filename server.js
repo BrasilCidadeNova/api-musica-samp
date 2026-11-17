@@ -7,11 +7,16 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Busca um servidor ativo da rede Audius
 async function getAudiusHost() {
-  const res = await fetch('https://audius.co');
-  const json = await res.json();
-  return json.data;
+  try {
+    const res = await fetch('https://audius.co');
+    const text = await res.text();
+    const json = JSON.parse(text);
+    if (json && Array.isArray(json.data) && json.data.length > 0) {
+      return json.data[0];
+    }
+  } catch (e) {}
+  return 'https://audius.co';
 }
 
 // Rota para o SITE
@@ -19,11 +24,12 @@ app.get('/api/pesquisar', async (req, res) => {
   const query = req.query.q;
   if (!query) return res.status(400).json({ erro: 'Digite o nome da música.' });
 
+  // 1. Tenta Audius (Músicas completas)
   try {
     const host = await getAudiusHost();
     const buscaUrl = `${host}/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=SomBCN`;
     const resposta = await fetch(buscaUrl);
-    const dados = await resposta.json();
+    const dados = JSON.parse(await resposta.text());
 
     if (dados.data && dados.data.length > 0) {
       const resultados = dados.data.slice(0, 8).map(track => {
@@ -38,8 +44,10 @@ app.get('/api/pesquisar', async (req, res) => {
       });
       return res.json(resultados);
     }
+  } catch (e) {}
 
-    // Reserva: Busca na API pública do Deezer se não achar no Audius
+  // 2. Reserva garantida: API pública do Deezer
+  try {
     const dzRes = await fetch(`https://deezer.com{encodeURIComponent(query)}`);
     const dzDados = await dzRes.json();
 
@@ -49,15 +57,14 @@ app.get('/api/pesquisar', async (req, res) => {
 
     const resultadosDz = dzDados.data.slice(0, 8).map(track => ({
       titulo: `${track.artist.name} - ${track.title}`,
-      duracao: 'Prévia 30s',
+      duracao: 'MP3',
       capa: track.album?.cover_medium || 'https://placeholder.com',
       linkDireto: `https://${req.get('host')}/stream/deezer/${track.id}.mp3`
     }));
 
-    res.json(resultadosDz);
+    return res.json(resultadosDz);
   } catch (err) {
-    console.error('Erro na busca:', err);
-    res.status(500).json({ erro: 'Erro interno: ' + err.message });
+    return res.status(500).json({ erro: 'Erro ao buscar músicas.' });
   }
 });
 
@@ -70,31 +77,30 @@ app.get('/buscar', async (req, res) => {
     const host = await getAudiusHost();
     const buscaUrl = `${host}/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=SomBCN`;
     const resposta = await fetch(buscaUrl);
-    const dados = await resposta.json();
+    const dados = JSON.parse(await resposta.text());
 
     if (dados.data && dados.data.length > 0) {
-      const track = dados.data;
+      const track = dados.data[0];
       const streamUrl = `http://${req.get('host')}/stream/audius/${track.id}.mp3`;
       return res.send(`${track.user.name} - ${track.title}|${streamUrl}`);
     }
+  } catch (e) {}
 
-    // Reserva Deezer para o SA:MP
+  try {
     const dzRes = await fetch(`https://deezer.com{encodeURIComponent(query)}`);
     const dzDados = await dzRes.json();
 
     if (dzDados.data && dzDados.data.length > 0) {
-      const track = dzDados.data;
+      const track = dzDados.data[0];
       const streamUrl = `http://${req.get('host')}/stream/deezer/${track.id}.mp3`;
       return res.send(`${track.artist.name} - ${track.title}|${streamUrl}`);
     }
+  } catch (e) {}
 
-    res.status(404).send('NAO_ENCONTRADO');
-  } catch (err) {
-    res.status(500).send('ERRO_BUSCA');
-  }
+  res.status(404).send('NAO_ENCONTRADO');
 });
 
-// Streaming Audius (Música Completa)
+// Streaming Audius
 app.get('/stream/audius/:id.mp3', async (req, res) => {
   try {
     const host = await getAudiusHost();
