@@ -1,5 +1,4 @@
 const express = require('express');
-const { spawn, execFile } = require('child_process');
 const path = require('path');
 
 const app = express();
@@ -7,45 +6,11 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Função de busca rápida com fallback para SoundCloud caso o YouTube bloqueie o IP
-function buscarMusica(query, limite = 1) {
-  return new Promise((resolve, reject) => {
-    // Tenta buscar primeiro no YouTube de forma leve
-    execFile('yt-dlp', [
-      `ytsearch${limite}:${query}`,
-      '--dump-single-json',
-      '--flat-playlist',
-      '--no-warnings'
-    ], { timeout: 15000 }, (err, stdout, stderr) => {
-      if (!err && stdout) {
-        try {
-          const data = JSON.parse(stdout);
-          if (data.entries && data.entries.length > 0) {
-            return resolve({ fonte: 'yt', entries: data.entries });
-          }
-        } catch (e) {}
-      }
-
-      // Se o YouTube bloquear o IP do Render, busca automaticamente no SoundCloud
-      execFile('yt-dlp', [
-        `scsearch${limite}:${query}`,
-        '--dump-single-json',
-        '--flat-playlist',
-        '--no-warnings'
-      ], { timeout: 15000 }, (errSc, stdoutSc) => {
-        if (errSc) {
-          console.error('Erro na busca:', stderr || errSc);
-          return reject(errSc);
-        }
-        try {
-          const dataSc = JSON.parse(stdoutSc);
-          resolve({ fonte: 'sc', entries: dataSc.entries || [] });
-        } catch (e) {
-          reject(e);
-        }
-      });
-    });
-  });
+// Busca um nó ativo da rede aberta Audius
+async function getAudiusHost() {
+  const res = await fetch('https://audius.co');
+  const json = await res.json();
+  return json.data;
 }
 
 // Rota para o SITE
@@ -54,23 +19,30 @@ app.get('/api/pesquisar', async (req, res) => {
   if (!query) return res.status(400).json({ erro: 'Digite o nome da música.' });
 
   try {
-    const { fonte, entries } = await buscarMusica(query, 5);
-    if (!entries.length) return res.status(404).json({ erro: 'Nenhuma música encontrada.' });
+    const host = await getAudiusHost();
+    const buscaUrl = `${host}/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=SomBCN`;
+    const resposta = await fetch(buscaUrl);
+    const dados = await resposta.json();
 
-    const resultados = entries.map(item => {
-      const urlOriginal = item.url || item.webpage_url || `https://youtube.com{item.id}`;
-      const encodedUrl = Buffer.from(urlOriginal).toString('base64url');
+    if (!dados.data || !dados.data.length) {
+      return res.status(404).json({ erro: 'Nenhuma música encontrada.' });
+    }
+
+    const resultados = dados.data.slice(0, 8).map(track => {
+      const minutos = Math.floor(track.duration / 60);
+      const segundos = String(track.duration % 60).padStart(2, '0');
       return {
-        titulo: item.title || 'Sem título',
-        duracao: item.duration_string || (fonte === 'sc' ? 'SoundCloud' : 'MP3'),
-        capa: item.thumbnail || (item.thumbnails && item.thumbnails[0]?.url) || 'https://placeholder.com',
-        linkDireto: `https://${req.get('host')}/stream/${encodedUrl}.mp3`
+        titulo: `${track.user.name} - ${track.title}`,
+        duracao: `${minutos}:${segundos}`,
+        capa: track.artwork?.['150x150'] || 'https://placeholder.com',
+        linkDireto: `https://${req.get('host')}/stream/${track.id}.mp3`
       };
     });
 
     res.json(resultados);
   } catch (err) {
-    res.status(500).json({ erro: 'Erro ao buscar músicas. Verifique os logs.' });
+    console.error('Erro Audius:', err);
+    res.status(500).json({ erro: 'Erro ao buscar músicas.' });
   }
 });
 
@@ -80,40 +52,36 @@ app.get('/buscar', async (req, res) => {
   if (!query) return res.status(400).send('ERRO');
 
   try {
-    const { entries } = await buscarMusica(query, 1);
-    const item = entries[0];
-    if (!item) return res.status(404).send('NAO_ENCONTRADO');
+    const host = await getAudiusHost();
+    const buscaUrl = `${host}/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=SomBCN`;
+    const resposta = await fetch(buscaUrl);
+    const dados = await resposta.json();
 
-    const urlOriginal = item.url || item.webpage_url || `https://youtube.com{item.id}`;
-    const encodedUrl = Buffer.from(urlOriginal).toString('base64url');
-    const streamUrl = `http://${req.get('host')}/stream/${encodedUrl}.mp3`;
+    if (!dados.data || !dados.data.length) return res.status(404).send('NAO_ENCONTRADO');
 
-    res.send(`${item.title}|${streamUrl}`);
+    const track = dados.data;
+    const streamUrl = `http://${req.get('host')}/stream/${track.id}.mp3`;
+    res.send(`${track.user.name} - ${track.title}|${streamUrl}`);
   } catch (err) {
     res.status(500).send('ERRO_BUSCA');
   }
 });
 
 // Rota de Streaming MP3 direto
-app.get('/stream/:encoded.mp3', (req, res) => {
+app.get('/stream/:id.mp3', async (req, res) => {
   try {
-    const mediaUrl = Buffer.from(req.params.encoded, 'base64url').toString('utf8');
+    const host = await getAudiusHost();
+    const streamEndpoint = `${host}/v1/tracks/${req.params.id}/stream?app_name=SomBCN`;
+    
+    const audioRes = await fetch(streamEndpoint);
+    if (!audioRes.ok) return res.status(404).send('Áudio indisponível');
+
     res.setHeader('Content-Type', 'audio/mpeg');
-
-    const ytdlp = spawn('yt-dlp', ['-f', 'bestaudio', '-o', '-', mediaUrl]);
-    const ffmpeg = spawn('ffmpeg', ['-i', 'pipe:0', '-f', 'mp3', '-ab', '128k', '-vn', 'pipe:1']);
-
-    ytdlp.stdout.pipe(ffmpeg.stdin);
-    ffmpeg.stdout.pipe(res);
-
-    req.on('close', () => {
-      ytdlp.kill();
-      ffmpeg.kill();
-    });
-  } catch (e) {
-    res.status(400).send('Link inválido');
+    const { Readable } = require('stream');
+    Readable.fromWeb(audioRes.body).pipe(res);
+  } catch (err) {
+    res.status(500).send('Erro no streaming');
   }
 });
 
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
-        
