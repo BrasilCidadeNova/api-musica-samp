@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Som BCN - Links Diretos MP3</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #121212;
+      color: #ffffff;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .container { width: 100%; max-width: 750px; }
+    h1 { text-align: center; color: #00e676; margin-bottom: 5px; }
+    p.sub { text-align: center; color: #aaaaaa; margin-bottom: 25px; }
+    .search-box { display: flex; gap: 10px; margin-bottom: 30px; }
+    input {
+      flex: 1; padding: 14px; border-radius: 8px;
+      border: 1px solid #333; background: #1e1e1e; color: #fff; font-size: 16px;
+    }
+    button {
+      padding: 14px 24px; border-radius: 8px; border: none;
+      background: #00e676; color: #000; font-weight: bold; font-size: 16px; cursor: pointer;
+    }
+    .card {
+      background: #1e1e1e; border-radius: 10px; padding: 15px; margin-bottom: 15px;
+      display: flex; gap: 15px; align-items: center; border: 1px solid #2c2c2c;
+    }
+    .card img { width: 100px; height: 75px; object-fit: cover; border-radius: 6px; }
+    .info { flex: 1; min-width: 0; }
+    .info h3 { margin: 0 0 8px 0; font-size: 15px; word-wrap: break-word; }
+    .link-box { display: flex; gap: 8px; margin-top: 8px; }
+    .link-box input { padding: 8px; font-size: 12px; background: #121212; }
+    .btn-copy { padding: 8px 12px; font-size: 12px; background: #2979ff; color: #fff; white-space: nowrap; }
+    audio { width: 100%; height: 32px; margin-top: 8px; }
+    #loading { text-align: center; display: none; color: #00e676; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h1>🎵 Som BCN - API MP3</h1>
+    <p class="sub">Pesquise sua música e copie o link direto (.mp3) para usar na JBL ou Rádio do servidor</p>
+
+    <div class="search-box">
+      <input type="text" id="campoBusca" placeholder="Digite o nome da música..." onkeypress="if(event.key==='Enter') buscarMusica()">
+      <button onclick="buscarMusica()">Pesquisar</button>
+    </div>
+
+    <div id="loading">Buscando músicas, aguarde...</div>
+    <div id="resultados"></div>
+  </div>
+
+  <script>
+    async function buscarMusica() {
+      const query = document.getElementById('campoBusca').value.trim();
+      if (!query) return;
+
+      const loading = document.getElementById('loading');
+      const divResultados = document.getElementById('resultados');
+      
+      loading.style.display = 'block';
+      divResultados.innerHTML = '';
+
+      try {
+        const resposta = await fetch(`/api/pesquisar?q=${encodeURIComponent(query)}`);
+        const musicas = await resposta.json();
+
+        loading.style.display = 'none';
+
+        if (musicas.erro) {
+          divResultados.innerHTML = `<p style="color:red; text-align:center;">${musicas.erro}</p>`;
+          return;
+        }
+
+        musicas.forEach(musica => {
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `
+            <img src="${musica.capa}" alt="Capa">
+            <div class="info">
+              <h3>${musica.titulo} (${musica.duracao})</h3>
+              <audio controls preload="none" src="${musica.linkDireto}"></audio>
+              <div class="link-box">
+                <input type="text" value="${musica.linkDireto}" readonly>
+                <button class="btn-copy" onclick="copiarLink(this, '${musica.linkDireto}')">Copiar</button>
+              </div>
+            </div>
+          `;
+          divResultados.appendChild(card);
+        });
+      } catch (erro) {
+        loading.style.display = 'none';
+        divResultados.innerHTML = '<p style="color:red; text-align:center;">Erro ao conectar com o servidor.</p>';
+      }
+    }
+
+    function copiarLink(botao, link) {
+      navigator.clipboard.writeText(link);
+      botao.innerText = 'Copiado!';
+      botao.style.background = '#00e676';
+      botao.style.color = '#000';
+      setTimeout(() => {
+        botao.innerText = 'Copiar';
+        botao.style.background = '#2979ff';
+        botao.style.color = '#fff';
+      }, 2000);
+    }
+  </script>
+
+</body>
+</html>
