@@ -1,7 +1,12 @@
-FROM node:18-bullseye-slim
+FROM node:20-bookworm-slim
 
-# Instala Python, ffmpeg e curl
-RUN apt-get update && apt-get install -y python3 curl ffmpeg && rm -rf /var/lib/apt/lists/*
+# Instala Python, ffmpeg, curl e certificados
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    curl \
+    ffmpeg \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Instala o yt-dlp atualizado
 RUN curl -L https://github.com -o /usr/local/bin/yt-dlp && \
