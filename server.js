@@ -1,12 +1,13 @@
 const express = require('express');
 const path = require('path');
+const { Readable } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Busca um nó ativo da rede aberta Audius
+// Busca um servidor ativo da rede Audius
 async function getAudiusHost() {
   const res = await fetch('https://audius.co');
   const json = await res.json();
@@ -24,25 +25,39 @@ app.get('/api/pesquisar', async (req, res) => {
     const resposta = await fetch(buscaUrl);
     const dados = await resposta.json();
 
-    if (!dados.data || !dados.data.length) {
+    if (dados.data && dados.data.length > 0) {
+      const resultados = dados.data.slice(0, 8).map(track => {
+        const minutos = Math.floor(track.duration / 60);
+        const segundos = String(track.duration % 60).padStart(2, '0');
+        return {
+          titulo: `${track.user.name} - ${track.title}`,
+          duracao: `${minutos}:${segundos}`,
+          capa: track.artwork?.['150x150'] || 'https://placeholder.com',
+          linkDireto: `https://${req.get('host')}/stream/audius/${track.id}.mp3`
+        };
+      });
+      return res.json(resultados);
+    }
+
+    // Reserva: Busca na API pública do Deezer se não achar no Audius
+    const dzRes = await fetch(`https://deezer.com{encodeURIComponent(query)}`);
+    const dzDados = await dzRes.json();
+
+    if (!dzDados.data || !dzDados.data.length) {
       return res.status(404).json({ erro: 'Nenhuma música encontrada.' });
     }
 
-    const resultados = dados.data.slice(0, 8).map(track => {
-      const minutos = Math.floor(track.duration / 60);
-      const segundos = String(track.duration % 60).padStart(2, '0');
-      return {
-        titulo: `${track.user.name} - ${track.title}`,
-        duracao: `${minutos}:${segundos}`,
-        capa: track.artwork?.['150x150'] || 'https://placeholder.com',
-        linkDireto: `https://${req.get('host')}/stream/${track.id}.mp3`
-      };
-    });
+    const resultadosDz = dzDados.data.slice(0, 8).map(track => ({
+      titulo: `${track.artist.name} - ${track.title}`,
+      duracao: 'Prévia 30s',
+      capa: track.album?.cover_medium || 'https://placeholder.com',
+      linkDireto: `https://${req.get('host')}/stream/deezer/${track.id}.mp3`
+    }));
 
-    res.json(resultados);
+    res.json(resultadosDz);
   } catch (err) {
-    console.error('Erro Audius:', err);
-    res.status(500).json({ erro: 'Erro ao buscar músicas.' });
+    console.error('Erro na busca:', err);
+    res.status(500).json({ erro: 'Erro interno: ' + err.message });
   }
 });
 
@@ -57,27 +72,52 @@ app.get('/buscar', async (req, res) => {
     const resposta = await fetch(buscaUrl);
     const dados = await resposta.json();
 
-    if (!dados.data || !dados.data.length) return res.status(404).send('NAO_ENCONTRADO');
+    if (dados.data && dados.data.length > 0) {
+      const track = dados.data;
+      const streamUrl = `http://${req.get('host')}/stream/audius/${track.id}.mp3`;
+      return res.send(`${track.user.name} - ${track.title}|${streamUrl}`);
+    }
 
-    const track = dados.data;
-    const streamUrl = `http://${req.get('host')}/stream/${track.id}.mp3`;
-    res.send(`${track.user.name} - ${track.title}|${streamUrl}`);
+    // Reserva Deezer para o SA:MP
+    const dzRes = await fetch(`https://deezer.com{encodeURIComponent(query)}`);
+    const dzDados = await dzRes.json();
+
+    if (dzDados.data && dzDados.data.length > 0) {
+      const track = dzDados.data;
+      const streamUrl = `http://${req.get('host')}/stream/deezer/${track.id}.mp3`;
+      return res.send(`${track.artist.name} - ${track.title}|${streamUrl}`);
+    }
+
+    res.status(404).send('NAO_ENCONTRADO');
   } catch (err) {
     res.status(500).send('ERRO_BUSCA');
   }
 });
 
-// Rota de Streaming MP3 direto
-app.get('/stream/:id.mp3', async (req, res) => {
+// Streaming Audius (Música Completa)
+app.get('/stream/audius/:id.mp3', async (req, res) => {
   try {
     const host = await getAudiusHost();
     const streamEndpoint = `${host}/v1/tracks/${req.params.id}/stream?app_name=SomBCN`;
-    
     const audioRes = await fetch(streamEndpoint);
     if (!audioRes.ok) return res.status(404).send('Áudio indisponível');
 
     res.setHeader('Content-Type', 'audio/mpeg');
-    const { Readable } = require('stream');
+    Readable.fromWeb(audioRes.body).pipe(res);
+  } catch (err) {
+    res.status(500).send('Erro no streaming');
+  }
+});
+
+// Streaming Deezer
+app.get('/stream/deezer/:id.mp3', async (req, res) => {
+  try {
+    const infoRes = await fetch(`https://deezer.com{req.params.id}`);
+    const info = await infoRes.json();
+    if (!info.preview) return res.status(404).send('Áudio indisponível');
+
+    const audioRes = await fetch(info.preview);
+    res.setHeader('Content-Type', 'audio/mpeg');
     Readable.fromWeb(audioRes.body).pipe(res);
   } catch (err) {
     res.status(500).send('Erro no streaming');
